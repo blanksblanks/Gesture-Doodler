@@ -1,4 +1,4 @@
-# Project Proposal: Gesture Doodler :punch: :point_up: :v: :ok_hand: :wave:
+# Project Proposal: Gesture Doodler :punch: :point_up: :v: :ok_hand:
 There are many drawing-based iPhone apps available on the App Store, such as KidsDoodle, Sketch, and LINE Brush. The vast majority of these apps involve translating touchscreen movements into brush strokes; apps that enable users to draw using visual gestures such as “ok” signs are much rarer and more difficult to build, especially for the iPhone. Our team aims to develop an iPhone app that allows users to make basic doodles using a small set of gestures.
 
 ## Background:
