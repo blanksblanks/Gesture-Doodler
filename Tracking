@@ -1,0 +1,305 @@
+Part 5: Code
+File: cam.py
+Note: Take out the top section of comments if you want to run the code.
+#Name: Melanie Hsu
+#UNI: mlh2197
+#Program Name: cam.py
+#I used part of an open-source project made by iftheqhar, who posted the code on GitHub
+#and included a tutorial explaining how it works. I added extra functionality to 
+#find the hand’s center of mass and output a number based on what hand gesture was
+#presented to the webcam. The output of cam.py is directed to standard error for my
+#testing purposes, and also redirected into Data.txt so that process.py can analyze
+#the output using the following command: python cam.py > Data.txt
+
+#You can find the original code here:
+#https://github.com/iftheqhar/opencv2_python/blob/master/software/firmware/cam.py
+#The blog post tutorial is here:
+#http://creat-tabu.blogspot.com/2013/08/opencv-python-hand-gesture-recognition.html
+
+#I chose to use this file after extensively testing the system, because it is both
+#quite flexible (allows rotations and slight tilting of the palm, and works when the
+#fist is rotated in almost every angle), yet from a first glance it has a lot of flaws,
+#such as its high sensitivity to certain variations (such as putting the fingers too
+#close to the corner of the screen). I felt that this was a program I could easily
+#work with and improve, and build a real-time system based on it. A fast, flexible
+#password authentication system is not only realistic, but also desirable for users.
+
+import cv2
+import numpy as np
+import sys
+cap = cv2.VideoCapture(0)#create a camera object
+while( cap.isOpened() ) :
+    ret,img = cap.read()#read the input frame and store it in img
+    #do background subtraction
+    gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)#convert the image to grayscale
+    blur = cv2.GaussianBlur(gray,(5,5),0)#blur the grayscale image using Gaussian Blur
+    #change the threshold value until we obtain a clear binary, black and white image
+    ret,thresh1 = cv2.threshold(blur,70,255,cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU)
+    #look for and draw the contours of the binary image we created
+    contours, hierarchy = cv2.findContours(thresh1,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+    drawing = np.zeros(img.shape,np.uint8)
+
+    max_area = 0
+    gest = 0
+    thex = 0
+    they = 0
+    #look for and extract the largest contour area
+    for i in range(len(contours)):
+            cnt=contours[i]
+            area = cv2.contourArea(cnt)#gives contour area
+            if(area>max_area):
+                max_area=area
+                ci=i
+    cnt=contours[ci]
+    #checks a curve for convexity defects and corrects it
+    #we don't want hull to do this, as we want to find the 
+    #convexity defects, so we set returnPoints = False
+    hull = cv2.convexHull(cnt)
+    #returns a dictionary of all calculated moment values,
+    #where moments are a weighted average of the image's pixel's intensities
+    #used to calculate the centroid(aka. the center of mass) of the hand
+    moments = cv2.moments(cnt)
+    if moments['m00']!=0:
+                cx = int(moments['m10']/moments['m00']) # cx = M10/M00
+                cy = int(moments['m01']/moments['m00']) # cy = M01/M00
+    centr=(cx,cy)   
+    #find the circumference of the hand    
+    cv2.circle(img,centr,5,[0,0,255],2)       
+    cv2.drawContours(drawing,[cnt],0,(0,255,0),2) 
+    cv2.drawContours(drawing,[hull],0,(0,0,255),2) 
+    
+    #approximates a contour shape to another shape with less number of vertices
+    #the smaller the epsilon (0.01), the more accurately it can detect convexity
+    #defects in the hand  
+    cnt = cv2.approxPolyDP(cnt,0.01*cv2.arcLength(cnt,True),True)
+    hull = cv2.convexHull(cnt,returnPoints = False)
+    
+    if(1):
+               #returns an array where each row contains these values - 
+               #[ start point, end point, farthest point, approximate distance
+               #to farthest point ]
+               #we will draw a line from start pt to end pt, then draw a dot at
+               #the furthest point, which should be the "lowest" point of the 
+               #convexity defect
+               defects = cv2.convexityDefects(cnt,hull)
+               mind=0
+               maxd=0
+               for i in range(defects.shape[0]):
+                    s,e,f,d = defects[i,0]
+                    start = tuple(cnt[s][0])
+                    end = tuple(cnt[e][0])
+                    far = tuple(cnt[f][0])
+                    dist = cv2.pointPolygonTest(cnt,centr,True)
+                    cv2.line(img,start,end,[0,255,0],2)
+                    cv2.circle(img,far,5,[0,0,255],-1)
+               #print(i)
+               what = ""
+               gest = i#the number of convexity defects in the hand
+               i=0
+    #I had cam.py output this additional info so that process.py can calculate
+    #the location of the hand's center of mass
+    (x,y),radius = cv2.minEnclosingCircle(cnt) #calculate coords of hand
+    center = (int(x),int(y))#calculate the center of mass
+    thex = center[0]
+    they = center[1]
+    print str(gest) + " " + str(thex) + " " + str(they)
+    sys.stderr.write(str(gest) + " " + str(thex) + " " + str(they) + "\n")
+
+    cv2.imshow('output',drawing)
+    cv2.imshow('input',img)
+                
+    k = cv2.waitKey(10)
+    if k == 27:
+        break
+
+File: process.py
+#Name: Melanie Hsu
+#UNI: mlh2197
+#Program Name: process.py
+#A file I wrote myself. It takes the output of cam.py and analyzes it in batches of
+#ten frames to determine what gesture the user showed to the webcam, and where the
+#gesture was located on the screen. This program will attempt to reconstruct the 
+#sequence of password keys that the user showed to the webcam. Depending on 
+#whether FIST BC was shown at the end of the sequence, the program will either 
+#check the sequence against an existing password (authentication) or generate and 
+#store the sequence as a new password (password creation). 
+
+import re
+import os
+
+def main():
+	infile = open('Data.txt', 'r')#Read Data.txt
+	data = infile.readlines()
+	infile.close()
+	analyze(data)
+
+def analyze(data):
+	rec = []
+	gesture = []
+	place = []
+	#clean up the input and prepare it for analysis
+	for line in data:
+		re.sub(r'\W+', '', line)
+		line = line.rstrip('\n')
+		rec.append(line)
+	count = 0
+	avgx = 0
+	avgy = 0
+	avgg = 0
+	max = 0
+	min = 0
+	x = 0
+	y = 0
+	g = 0
+	prevgest = "UNK"
+	prevloc = "UNK"
+	for line in rec:
+		print "LINE: " + line
+		trio = line.split(" ")
+		try:
+			g = int(trio[0])#Grab the convexity defect rercording
+			x = int(trio[1])#Grab the x-coordinate of the center of mass
+			y = int(trio[2])#Grab the y-coordinate of the center of mass
+		except ValueError:#A non-numeric character was seen
+			print trio[0]
+			if trio[0] == "Cleaned":#Reached end of the data
+				#If only one point is left uncalculated, compute average based on that pt. alone
+				#It's probably better to discard the data in this case, but I've already tested
+				#with it and it didn't cause any problems
+				if count == 0:
+					gest, loc = calc(float(avgx), float(avgy), float(avgg))
+				else:
+					gest, loc = calc(float(avgx/count), float(avgy/count), float(avgg/count))
+				print "GEST: " + gest + " LOC: " + loc
+				if gest == "FIST" and loc == "BC":#Analyze the last batch
+					newpass(gesture, place)
+				else:
+					gesture.append(gest)
+					place.append(loc)
+					checkpass(gesture, place)
+				return
+			else:
+				continue
+		#Set or calculate the largest and smallest convexity defect readings
+		#seen in this batch. This data is used to determine whether a transitioning,
+		#or TRAN gesture was shown.
+		if count == 1:
+			max = g
+			min = g
+		else:
+			if g > max:
+				max = g
+			elif g < min:
+				min = g
+		avgx += x
+		avgy += y
+		avgg += g
+		count += 1
+		#take the average of every ten frames, translate this average into a password key
+		#by determining what gesture the user showed and where on the screen the gesture
+		#was located
+		if count == 10:
+			print "MAX: " + str(max) + " MIN: " + str(min)
+			gest, loc = calc(avgx/10.0, avgy/10.0, avgg/10.0)
+			#If sequence ends in FIST BC, set the sequence the user showed as a new password
+			if gest == "FIST" and loc == "BC":
+				newpass(gesture, place)
+				return
+			if gest == prevgest and loc == prevloc:#No new key presented
+				print "No new key, continue"
+			elif (max - min) >= 3:#There was likely an abrupt transition b/w FIST and SPLAY
+				#The TRAN gesture prevents transitioning gestures from
+				#being interpreted as a password key 
+				gesture.append("TRAN")
+				place.append("TRAN")
+				prevgest = "TRAN"
+				prevloc = "TRAN"
+			else:
+				gesture.append(gest)#Interpret what we just saw as a new password key
+				place.append(loc)
+				prevgest = gest
+				prevloc = loc
+			count = 0
+			avgx = 0
+			avgy = 0
+			avgg = 0
+
+#If the sequence ends with FIST BC, make a new password overwriting the previous one
+def newpass(gesture, place):
+	#Save the new password in Password.txt
+	outfile = open("Password.txt", 'w')
+	for i in range(len(gesture)):
+		if str(gesture[i]) == "TRAN":#don't want transitioning gestures in the password
+			continue
+		outfile.write(str(gesture[i]) + '\n')
+		outfile.write(str(place[i]) + '\n')
+	outfile.close()
+	#I should have added this line in earlier. Regardless, I've pointed out
+	#in my videos when I successfully set a new password.
+	print "NEW PASSWORD GENERATED"
+
+#If the sequence did not end with FIST BC, check it against the old password
+def checkpass(gesture, place):
+	#If Password.txt is empty, then the user has not set a password. Return error.
+	if os.stat("Password.txt").st_size == 0:
+		print "ERROR: NO PASSWORD SET"
+		return
+
+	check = open("Password.txt", 'r')
+	password = check.readlines()
+	check.close()
+
+	count = 0
+	even = False
+	#Check each key in the sequence against the password on file
+	for line in password:
+		token = line.split()
+		print "TOKEN: " + token[0]
+		if even is False:
+			print "GESTURE: " + gesture[count]
+			#Exclude TRAN gestures from the password comparison
+			if gesture[count] is not "TRAN" and token[0] != gesture[count]:
+				print "PASSWORD INCORRECT"
+				return
+			even = True
+		else:
+			print "LOC: " + place[count]
+			if gesture[count] is not "TRAN" and token[0] != place[count]:
+				print "PASSWORD INCORRECT"
+				return
+			even = False
+			count += 1
+	print "LOGIN SUCCESS"
+
+#Function to calculate the "where" and "what" of the most recent gesture
+#If the old and new gesture AND locations are the same, treat it as the same key
+def calc(avgx, avgy, avgg):
+	what = ""
+	where = ""
+	#assign the gesture's location to one of the six quadrants
+	if avgx < 350:#left
+		if avgy < 350:
+			where = "TL"
+		else:
+			where = "BL"
+	elif avgx > 750:#right
+		if avgy < 350:
+			where = "TR"
+		else:
+			where = "BR"
+	else:
+		if avgy < 350:
+			where = "TC"
+		else:
+			where = "BC"#the remaining region is defined as the center
+	#determine what gesture the user input
+	if 0 <= avgg <= 2:
+		what = "FIST"
+	elif avgg > 3.5:
+		what = "SPLAY"
+	else:
+		what = "UNK"
+	print what + " " + where
+	return what, where
+
+if __name__ == "__main__": main()
